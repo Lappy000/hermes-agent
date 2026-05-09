@@ -188,6 +188,9 @@ def _get_active_profile_path() -> Path:
 
 def _get_wrapper_dir() -> Path:
     """Return the directory for wrapper scripts."""
+    if sys.platform == "win32":
+        # On Windows, use %USERPROFILE%\.hermes\bin (added to PATH by installer)
+        return Path.home() / ".hermes" / "bin"
     return Path.home() / ".local" / "bin"
 
 
@@ -265,9 +268,15 @@ def check_alias_collision(name: str) -> Optional[str]:
     # Check existing commands in PATH
     wrapper_dir = _get_wrapper_dir()
     try:
-        result = subprocess.run(
-            ["which", canon], capture_output=True, text=True, timeout=5,
-        )
+        if sys.platform == "win32":
+            # On Windows, use 'where' instead of 'which'
+            result = subprocess.run(
+                ["where", canon], capture_output=True, text=True, timeout=5,
+            )
+        else:
+            result = subprocess.run(
+                ["which", canon], capture_output=True, text=True, timeout=5,
+            )
         if result.returncode == 0:
             existing_path = result.stdout.strip()
             # Allow overwriting our own wrappers
@@ -306,8 +315,13 @@ def create_wrapper_script(name: str) -> Optional[Path]:
 
     wrapper_path = wrapper_dir / canon
     try:
-        wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {canon} "$@"\n')
-        wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        if sys.platform == "win32":
+            # Create .cmd wrapper on Windows
+            wrapper_path = wrapper_dir / f"{canon}.cmd"
+            wrapper_path.write_text(f'@echo off\r\nhermes -p {canon} %*\r\n')
+        else:
+            wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {canon} "$@"\n')
+            wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         return wrapper_path
     except OSError as e:
         print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
@@ -769,21 +783,27 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         raw = pid_file.read_text().strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
-        os.kill(pid, _signal.SIGTERM)
-        # Wait up to 10s for graceful shutdown
-        for _ in range(20):
-            _time.sleep(0.5)
+
+        if sys.platform == "win32":
+            from hermes_cli.platform_process import graceful_kill
+            graceful_kill(pid, grace_seconds=10.0)
+            print(f"✓ Gateway stopped (PID {pid})")
+        else:
+            os.kill(pid, _signal.SIGTERM)
+            # Wait up to 10s for graceful shutdown
+            for _ in range(20):
+                _time.sleep(0.5)
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    print(f"✓ Gateway stopped (PID {pid})")
+                    return
+            # Force kill
             try:
-                os.kill(pid, 0)
+                os.kill(pid, _signal.SIGKILL)
             except ProcessLookupError:
-                print(f"✓ Gateway stopped (PID {pid})")
-                return
-        # Force kill
-        try:
-            os.kill(pid, _signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        print(f"✓ Gateway force-stopped (PID {pid})")
+                pass
+            print(f"✓ Gateway force-stopped (PID {pid})")
     except (ProcessLookupError, PermissionError):
         print("✓ Gateway already stopped")
     except Exception as e:

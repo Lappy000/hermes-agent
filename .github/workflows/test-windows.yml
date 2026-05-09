@@ -1,0 +1,120 @@
+name: Test Windows
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-windows:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022]
+        python: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[cli,pty]" --quiet
+          pip install pytest pytest-xdist pytest-timeout --quiet
+
+      - name: Run unit tests (agent core)
+        shell: pwsh
+        run: |
+          pytest tests/ -x -q --timeout=60 `
+            -k "not integration and not gateway and not terminal_exec" `
+            --ignore=tests/gateway/ `
+            --ignore=tests/integration/ `
+            -n auto
+
+      - name: Run unit tests (tools - non-terminal)
+        shell: pwsh
+        run: |
+          pytest tests/tools/ -x -q --timeout=60 `
+            -k "not terminal and not local_env and not docker and not ssh and not modal" `
+            -n auto
+
+      - name: Run terminal tool tests (Windows)
+        shell: pwsh
+        run: |
+          pytest tests/tools/ -x -q --timeout=120 `
+            -k "terminal or local_env" `
+            -n 2
+
+      - name: Run CLI tests (Windows-safe subset)
+        shell: pwsh
+        run: |
+          pytest tests/hermes_cli/ -x -q --timeout=60 `
+            -k "not systemd and not launchd and not gateway_install" `
+            -n auto
+
+      - name: Verify hermes CLI starts
+        shell: pwsh
+        run: |
+          python -m hermes_cli.main --version
+          python -m hermes_cli.main doctor --quick 2>&1 || true
+
+      - name: Test PowerShell terminal execution
+        shell: pwsh
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from tools.environments.local import LocalEnvironment, _find_powershell, _is_powershell
+          ps = _find_powershell()
+          assert ps is not None, 'PowerShell not found'
+          assert _is_powershell(ps), f'{ps} not detected as PowerShell'
+          print(f'Found PowerShell: {ps}')
+          env = LocalEnvironment()
+          print(f'Shell OK, cwd: {env.cwd}')
+          "
+
+      - name: Test platform_process module
+        shell: pwsh
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from hermes_cli.platform_process import (
+              is_process_alive, create_process_group,
+              IS_WINDOWS
+          )
+          assert IS_WINDOWS, 'Should detect Windows'
+          # Current process should be alive
+          import os
+          assert is_process_alive(os.getpid()), 'Current PID should be alive'
+          # Non-existent PID
+          assert not is_process_alive(99999999), 'Fake PID should not be alive'
+          print('platform_process: all checks passed')
+          "
+
+      - name: Test platform_info module
+        shell: pwsh
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from hermes_cli.platform_info import (
+              get_username, get_uid, get_home_dir, get_runtime_dir,
+              IS_WINDOWS
+          )
+          assert IS_WINDOWS
+          assert get_username(), 'Username should not be empty'
+          assert get_uid() == 1000, 'Windows UID placeholder should be 1000'
+          home = get_home_dir()
+          assert home.exists(), f'Home {home} should exist'
+          print(f'username={get_username()}, home={home}')
+          print('platform_info: all checks passed')
+          "

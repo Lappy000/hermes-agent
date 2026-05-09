@@ -69,6 +69,8 @@ def _system_package_install_cmd(pkg: str) -> str:
         return f"pkg install {pkg}"
     if sys.platform == "darwin":
         return f"brew install {pkg}"
+    if sys.platform == "win32":
+        return f"winget install {pkg}"
     return f"sudo apt install {pkg}"
 
 
@@ -914,6 +916,46 @@ def run_doctor(args):
         check_ok("git")
     else:
         check_warn("git not found", "(optional)")
+
+    # Windows-specific checks
+    if sys.platform == "win32":
+        # PowerShell
+        if _safe_which("pwsh"):
+            check_ok("PowerShell 7+ (pwsh)")
+        elif _safe_which("powershell"):
+            check_ok("Windows PowerShell 5.x")
+            check_info("Recommend upgrading to PowerShell 7+: https://aka.ms/powershell")
+        else:
+            check_warn("PowerShell not found")
+
+        # Long paths
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\FileSystem",
+            )
+            value, _ = winreg.QueryValueEx(key, "LongPathsEnabled")
+            winreg.CloseKey(key)
+            if value == 1:
+                check_ok("Long paths enabled")
+            else:
+                check_warn("Long paths not enabled", "(may cause issues with deep skill paths)")
+                check_info("Enable: Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem' -Name 'LongPathsEnabled' -Value 1")
+        except Exception:
+            check_info("Could not check long path status (requires elevated access)")
+
+        # NSSM for gateway service
+        if _safe_which("nssm"):
+            check_ok("NSSM (service manager)")
+        else:
+            check_info("NSSM not found (needed for gateway as Windows Service). Get from: https://nssm.cc")
+
+        # Windows Terminal (optional quality-of-life)
+        if _safe_which("wt"):
+            check_ok("Windows Terminal")
+        else:
+            check_info("Windows Terminal recommended for best experience: winget install Microsoft.WindowsTerminal")
     
     # ripgrep (optional, for faster file search)
     if _safe_which("rg"):

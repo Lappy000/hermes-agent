@@ -313,3 +313,79 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
 
     lines.append("")
     return "\n".join(lines)
+
+
+def generate_powershell(parser: argparse.ArgumentParser) -> str:
+    """Generate a PowerShell completion script.
+
+    Uses Register-ArgumentCompleter with a script block that provides
+    tab completion for hermes subcommands and flags.
+    """
+    tree = _walk(parser)
+    top_cmds = sorted(tree["subcommands"].keys())
+
+    lines = [
+        "# PowerShell completion for hermes CLI",
+        "# Add to your $PROFILE: . <path-to-this-file>",
+        "#   or: hermes completion powershell | Out-String | Invoke-Expression",
+        "",
+        "Register-ArgumentCompleter -Native -CommandName hermes -ScriptBlock {",
+        "    param($wordToComplete, $commandAst, $cursorPosition)",
+        "",
+        "    $commands = $commandAst.ToString().Split(' ', [StringSplitOptions]::RemoveEmptyEntries)",
+        "    $numWords = $commands.Count",
+        "",
+        "    # Top-level subcommands",
+        "    $topCommands = @(",
+    ]
+
+    for cmd in top_cmds:
+        info = tree["subcommands"][cmd]
+        help_text = _clean(info.get("help", ""), maxlen=80).replace("'", "''")
+        lines.append(f"        @{{ Name = '{cmd}'; Tooltip = '{help_text}' }}")
+
+    lines.extend([
+        "    )",
+        "",
+        "    # Sub-subcommands",
+        "    $subCommands = @{",
+    ])
+
+    for cmd in top_cmds:
+        info = tree["subcommands"][cmd]
+        if info["subcommands"]:
+            sub_entries = []
+            for sc in sorted(info["subcommands"]):
+                sinfo = info["subcommands"][sc]
+                shelp = _clean(sinfo.get("help", ""), maxlen=80).replace("'", "''")
+                sub_entries.append(f"@{{ Name = '{sc}'; Tooltip = '{shelp}' }}")
+            joined = ", ".join(sub_entries)
+            lines.append(f"        '{cmd}' = @({joined})")
+
+    lines.extend([
+        "    }",
+        "",
+        "    # Determine completions based on position",
+        "    if ($numWords -le 1 -or ($numWords -eq 2 -and $wordToComplete)) {",
+        "        # Complete top-level commands",
+        "        $topCommands | Where-Object { $_.Name -like \"$wordToComplete*\" } | ForEach-Object {",
+        "            [System.Management.Automation.CompletionResult]::new(",
+        "                $_.Name, $_.Name, 'ParameterValue', $_.Tooltip",
+        "            )",
+        "        }",
+        "    } elseif ($numWords -ge 2) {",
+        "        # Complete subcommands",
+        "        $parentCmd = $commands[1]",
+        "        if ($subCommands.ContainsKey($parentCmd)) {",
+        "            $subCommands[$parentCmd] | Where-Object { $_.Name -like \"$wordToComplete*\" } | ForEach-Object {",
+        "                [System.Management.Automation.CompletionResult]::new(",
+        "                    $_.Name, $_.Name, 'ParameterValue', $_.Tooltip",
+        "                )",
+        "            }",
+        "        }",
+        "    }",
+        "}",
+        "",
+    ])
+
+    return "\n".join(lines)

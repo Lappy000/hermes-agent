@@ -26,8 +26,13 @@ def flush_stdin() -> None:
     try:
         if not sys.stdin.isatty():
             return
-        import termios
-        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        if sys.platform == "win32":
+            import msvcrt
+            while msvcrt.kbhit():
+                msvcrt.getch()
+        else:
+            import termios
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
     except Exception:
         pass
 

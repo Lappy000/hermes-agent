@@ -201,11 +201,115 @@ def _find_bash() -> str:
         if candidate and os.path.isfile(candidate):
             return candidate
 
-    raise RuntimeError(
-        "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
-        "Install it from: https://git-scm.com/download/win\n"
-        "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
-    )
+    return None  # Bash not available — caller should try PowerShell/cmd
+
+
+def _find_powershell() -> str | None:
+    """Find PowerShell executable (pwsh 7+ preferred over powershell.exe 5.x)."""
+    # PowerShell 7+ (cross-platform, modern)
+    pwsh = shutil.which("pwsh")
+    if pwsh:
+        return pwsh
+    # Windows PowerShell 5.x (built-in on Windows)
+    ps = shutil.which("powershell")
+    if ps:
+        return ps
+    return None
+
+
+def _find_cmd() -> str | None:
+    """Find cmd.exe on Windows."""
+    if not _IS_WINDOWS:
+        return None
+    comspec = os.environ.get("COMSPEC")
+    if comspec and os.path.isfile(comspec):
+        return comspec
+    cmd = shutil.which("cmd")
+    if cmd:
+        return cmd
+    # Hardcoded fallback
+    candidate = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe")
+    if os.path.isfile(candidate):
+        return candidate
+    return None
+
+
+def _get_configured_shell() -> str:
+    """Return the shell preference from config or auto-detect.
+
+    Config option: terminal.shell = "auto" | "bash" | "powershell" | "cmd"
+    On Windows, 'auto' resolves to: PowerShell > Git Bash > cmd.exe
+    On Unix, 'auto' resolves to bash (as before).
+    """
+    shell_pref = "auto"
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        terminal_cfg = cfg.get("terminal") or {}
+        shell_pref = terminal_cfg.get("shell", "auto")
+    except Exception:
+        pass
+
+    if shell_pref == "auto":
+        if _IS_WINDOWS:
+            # Windows auto-detection: PowerShell > Git Bash > cmd.exe
+            ps = _find_powershell()
+            if ps:
+                return ps
+            bash = _find_bash()
+            if bash:
+                return bash
+            cmd = _find_cmd()
+            if cmd:
+                return cmd
+            raise RuntimeError(
+                "No suitable shell found on Windows.\n"
+                "Install PowerShell 7+ from: https://aka.ms/powershell\n"
+                "Or Git for Windows from: https://git-scm.com/download/win"
+            )
+        else:
+            return _find_bash()
+    elif shell_pref == "bash":
+        bash = _find_bash()
+        if bash:
+            return bash
+        raise RuntimeError(
+            "Bash not found. On Windows, install Git for Windows.\n"
+            "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
+        )
+    elif shell_pref == "powershell":
+        ps = _find_powershell()
+        if ps:
+            return ps
+        raise RuntimeError("PowerShell not found. Install from https://aka.ms/powershell")
+    elif shell_pref == "cmd":
+        cmd = _find_cmd()
+        if cmd:
+            return cmd
+        raise RuntimeError("cmd.exe not found")
+    else:
+        # Treat as explicit path
+        if os.path.isfile(shell_pref):
+            return shell_pref
+        raise RuntimeError(f"Configured shell not found: {shell_pref}")
+
+
+def _is_powershell(shell_path: str) -> bool:
+    """Check if a shell path points to PowerShell."""
+    basename = os.path.basename(shell_path).lower()
+    return basename in ("pwsh", "pwsh.exe", "powershell", "powershell.exe")
+
+
+def _is_cmd(shell_path: str) -> bool:
+    """Check if a shell path points to cmd.exe."""
+    basename = os.path.basename(shell_path).lower()
+    return basename in ("cmd", "cmd.exe")
+
+
+def _is_bash(shell_path: str) -> bool:
+    """Check if a shell path points to bash."""
+    basename = os.path.basename(shell_path).lower()
+    return basename in ("bash", "bash.exe", "sh", "sh.exe")
 
 
 # Backward compat — process_registry.py imports this name
@@ -213,10 +317,20 @@ _find_shell = _find_bash
 
 
 # Standard PATH entries for environments with minimal PATH.
-_SANE_PATH = (
-    "/opt/homebrew/bin:/opt/homebrew/sbin:"
-    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-)
+if _IS_WINDOWS:
+    _SANE_PATH = os.pathsep.join(filter(None, [
+        os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32"),
+        os.environ.get("SystemRoot", r"C:\Windows"),
+        os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "Wbem"),
+        os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0"),
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "cmd"),
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin"),
+    ]))
+else:
+    _SANE_PATH = (
+        "/opt/homebrew/bin:/opt/homebrew/sbin:"
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    )
 
 
 def _make_run_env(env: dict) -> dict:
@@ -235,8 +349,10 @@ def _make_run_env(env: dict) -> dict:
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
-    if "/usr/bin" not in existing_path.split(":"):
-        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+    # Use os.pathsep for cross-platform PATH concatenation
+    _check_entry = "/usr/bin" if not _IS_WINDOWS else os.environ.get("SystemRoot", r"C:\Windows")
+    if _check_entry not in existing_path.split(os.pathsep):
+        run_env["PATH"] = f"{existing_path}{os.pathsep}{_SANE_PATH}" if existing_path else _SANE_PATH
 
     # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
     # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
@@ -358,6 +474,13 @@ class LocalEnvironment(BaseEnvironment):
         override the temp root explicitly (for example via terminal.env or a
         custom TMPDIR), then fall back to the host process environment.
         """
+        if _IS_WINDOWS:
+            for env_var in ("TEMP", "TMP", "TMPDIR"):
+                candidate = self.env.get(env_var) or os.environ.get(env_var)
+                if candidate and os.path.isdir(candidate):
+                    return candidate
+            return tempfile.gettempdir()
+
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):
@@ -375,18 +498,43 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        bash = _find_bash()
+        """Execute a command via the configured shell.
+
+        On Unix: always uses bash (as before).
+        On Windows: uses configured shell (PowerShell, bash, or cmd.exe).
+        Adapts command wrapping and arguments per shell type.
+        """
+        if _IS_WINDOWS:
+            shell = _get_configured_shell()
+        else:
+            shell = _find_bash()
+
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
         # custom init files so tools registered outside bash_profile
         # (nvm, asdf, pyenv, …) end up on PATH in the captured snapshot.
         # Non-login invocations are already sourcing the snapshot and
         # don't need this.
-        if login:
-            init_files = _resolve_shell_init_files()
-            if init_files:
-                cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+        if _is_bash(shell):
+            if login:
+                init_files = _resolve_shell_init_files()
+                if init_files:
+                    cmd_string = _prepend_shell_init(cmd_string, init_files)
+            args = [shell, "-l", "-c", cmd_string] if login else [shell, "-c", cmd_string]
+        elif _is_powershell(shell):
+            # PowerShell: use -NoProfile for non-login, -Command for execution
+            if login:
+                args = [shell, "-NoLogo", "-Command", cmd_string]
+            else:
+                args = [shell, "-NoProfile", "-NoLogo", "-NonInteractive",
+                        "-Command", cmd_string]
+        elif _is_cmd(shell):
+            # cmd.exe: /C to run and exit
+            args = [shell, "/C", cmd_string]
+        else:
+            # Unknown shell — pass -c as generic POSIX convention
+            args = [shell, "-c", cmd_string]
+
         run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by
@@ -421,6 +569,7 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             cwd=_popen_cwd,
+            **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if _IS_WINDOWS else {}),
         )
         if not _IS_WINDOWS:
             try:
@@ -467,7 +616,18 @@ class LocalEnvironment(BaseEnvironment):
 
         try:
             if _IS_WINDOWS:
-                proc.terminate()
+                # Use platform_process for proper tree-kill on Windows
+                from hermes_cli.platform_process import kill_process_tree
+                kill_process_tree(proc.pid, force=False)
+                # Wait briefly, then force-kill if still alive
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    kill_process_tree(proc.pid, force=True)
+                    try:
+                        proc.wait(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        pass
             else:
                 try:
                     pgid = os.getpgid(proc.pid)

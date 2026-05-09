@@ -7904,7 +7904,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
                 if not drained:
                     try:
-                        os.kill(pid, _signal.SIGTERM)
+                        if sys.platform == "win32":
+                            from hermes_cli.platform_process import terminate_process
+                            terminate_process(pid)
+                        else:
+                            os.kill(pid, _signal.SIGTERM)
                     except (ProcessLookupError, PermissionError):
                         pass
                 killed_pids.add(pid)
@@ -7914,7 +7918,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if pid in profile_processes:
                     continue
                 try:
-                    os.kill(pid, _signal.SIGTERM)
+                    if sys.platform == "win32":
+                        from hermes_cli.platform_process import terminate_process
+                        terminate_process(pid)
+                    else:
+                        os.kill(pid, _signal.SIGTERM)
                     killed_pids.add(pid)
                 except (ProcessLookupError, PermissionError):
                     pass
@@ -7967,7 +7975,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     )
                     for pid in _stuck:
                         try:
-                            os.kill(pid, _signal.SIGKILL)
+                            if sys.platform == "win32":
+                                from hermes_cli.platform_process import force_kill_process
+                                force_kill_process(pid)
+                            else:
+                                os.kill(pid, _signal.SIGKILL)
                         except (ProcessLookupError, PermissionError):
                             pass
                     # Give the OS a beat to reap the processes so the

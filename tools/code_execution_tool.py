@@ -154,7 +154,8 @@ def generate_hermes_tools_module(enabled_tools: List[str],
 
     Args:
         enabled_tools: Tool names enabled in the current session.
-        transport: ``"uds"`` for Unix domain socket (local backend) or
+        transport: ``"uds"`` for Unix domain socket (local backend),
+                   ``"tcp"`` for TCP localhost (Windows local backend), or
                    ``"file"`` for file-based RPC (remote backends).
     """
     tools_to_generate = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
@@ -174,6 +175,8 @@ def generate_hermes_tools_module(enabled_tools: List[str],
 
     if transport == "file":
         header = _FILE_TRANSPORT_HEADER
+    elif transport == "tcp":
+        header = _TCP_TRANSPORT_HEADER
     else:
         header = _UDS_TRANSPORT_HEADER
 
@@ -239,6 +242,50 @@ def _connect():
     if _sock is None:
         _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         _sock.connect(os.environ["HERMES_RPC_SOCKET"])
+        _sock.settimeout(300)
+    return _sock
+
+def _call(tool_name, args):
+    """Send a tool call to the parent process and return the parsed result."""
+    request = json.dumps({"tool": tool_name, "args": args}) + "\\n"
+    with _call_lock:
+        conn = _connect()
+        conn.sendall(request.encode())
+        buf = b""
+        while True:
+            chunk = conn.recv(65536)
+            if not chunk:
+                raise RuntimeError("Agent process disconnected")
+            buf += chunk
+            if buf.endswith(b"\\n"):
+                break
+    raw = buf.decode().strip()
+    result = json.loads(raw)
+    if isinstance(result, str):
+        try:
+            return json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return result
+    return result
+
+'''
+
+# ---- TCP transport (Windows local backend) --------------------------------
+
+_TCP_TRANSPORT_HEADER = '''\
+"""Auto-generated Hermes tools RPC stubs (TCP transport for Windows)."""
+import json, os, socket, shlex, threading, time
+
+_sock = None
+_call_lock = threading.Lock()
+''' + _COMMON_HELPERS + '''\
+
+def _connect():
+    global _sock
+    if _sock is None:
+        _host, _port = os.environ["HERMES_RPC_ADDR"].split(":")
+        _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _sock.connect((_host, int(_port)))
         _sock.settimeout(300)
     return _sock
 
@@ -985,11 +1032,16 @@ def execute_code(
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
-    # Use /tmp on macOS to avoid the long /var/folders/... path that pushes
-    # Unix domain socket paths past the 104-byte macOS AF_UNIX limit.
+    # On Windows, use TCP localhost instead of Unix domain sockets.
+    # On macOS, use /tmp to avoid the long /var/folders/... path that pushes
+    # Unix domain socket paths past the 104-byte AF_UNIX limit.
     # On Linux, tempfile.gettempdir() already returns /tmp.
-    _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
-    sock_path = os.path.join(_sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
+    _use_tcp_transport = sys.platform == "win32"
+    sock_path = None
+    tcp_addr = None
+    if not _use_tcp_transport:
+        _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+        sock_path = os.path.join(_sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
 
     tool_call_log: list = []
     tool_call_counter = [0]  # mutable so the RPC thread can increment
@@ -1000,7 +1052,8 @@ def execute_code(
         # Write the auto-generated hermes_tools module
         # sandbox_tools is already the correct set (intersection with session
         # tools, or SANDBOX_ALLOWED_TOOLS as fallback — see lines above).
-        tools_src = generate_hermes_tools_module(list(sandbox_tools))
+        _transport = "tcp" if _use_tcp_transport else "uds"
+        tools_src = generate_hermes_tools_module(list(sandbox_tools), transport=_transport)
         with open(os.path.join(tmpdir, "hermes_tools.py"), "w") as f:
             f.write(tools_src)
 
@@ -1008,10 +1061,16 @@ def execute_code(
         with open(os.path.join(tmpdir, "script.py"), "w") as f:
             f.write(code)
 
-        # --- Start UDS server ---
-        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server_sock.bind(sock_path)
-        os.chmod(sock_path, 0o600)
+        # --- Start RPC server (UDS on Unix, TCP on Windows) ---
+        if _use_tcp_transport:
+            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_sock.bind(("127.0.0.1", 0))  # OS picks ephemeral port
+            _, port = server_sock.getsockname()
+            tcp_addr = f"127.0.0.1:{port}"
+        else:
+            server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server_sock.bind(sock_path)
+            os.chmod(sock_path, 0o600)
         server_sock.listen(1)
 
         rpc_thread = threading.Thread(
@@ -1053,7 +1112,10 @@ def execute_code(
             # Allow vars with known safe prefixes.
             if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
                 child_env[k] = v
-        child_env["HERMES_RPC_SOCKET"] = sock_path
+        if _use_tcp_transport:
+            child_env["HERMES_RPC_ADDR"] = tcp_addr
+        else:
+            child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Ensure the hermes-agent root is importable in the sandbox so
         # repo-root modules are available to child scripts.  We also prepend
@@ -1301,10 +1363,11 @@ def execute_code(
                 logger.debug("Server socket close error: %s", e)
         import shutil
         shutil.rmtree(tmpdir, ignore_errors=True)
-        try:
-            os.unlink(sock_path)
-        except OSError:
-            pass  # already cleaned up or never created
+        if sock_path:
+            try:
+                os.unlink(sock_path)
+            except OSError:
+                pass  # already cleaned up or never created
 
 
 def _kill_process_group(proc, escalate: bool = False):

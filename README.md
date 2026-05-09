@@ -2,7 +2,15 @@
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
 
-# Hermes Agent ☤
+# Hermes Agent ☤ — Windows Native Port
+
+> **⚠️ This is a modified fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) with full native Windows support.**
+> 
+> Runs directly on Windows 10/11 without WSL. Uses PowerShell as default shell, NSSM for gateway service, TCP sockets for code execution sandbox, and ConPTY for interactive processes.
+> 
+> All original functionality is preserved — this fork only adds Windows compatibility layers.
+
+---
 
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
@@ -29,6 +37,16 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 ---
 
 ## Quick Install
+
+### Windows (Native)
+
+```powershell
+irm https://raw.githubusercontent.com/Lappy000/hermes-agent/main/scripts/install.ps1 | iex
+```
+
+Requires Python 3.11+ and Git. The installer handles venv creation, PATH setup, and wrapper scripts.
+
+### Linux / macOS / WSL2
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash

@@ -1120,12 +1120,16 @@ class SystemScopeRequiresRootError(RuntimeError):
 
 def _user_dbus_socket_path() -> Path:
     """Return the expected per-user D-Bus socket path (regardless of existence)."""
+    if sys.platform == "win32":
+        return Path("NUL")  # Windows null device — never exists as a socket
     xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     return Path(xdg) / "bus"
 
 
 def _user_systemd_private_socket_path() -> Path:
     """Return the per-user systemd private socket path (regardless of existence)."""
+    if sys.platform == "win32":
+        return Path("NUL")  # Windows null device — never exists as a socket
     xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     return Path(xdg) / "systemd" / "private"
 
@@ -1137,6 +1141,8 @@ def _user_systemd_socket_ready() -> bool:
     D-Bus session bus socket is absent. ``systemctl --user`` can still work in
     that configuration, so preflight checks must treat either socket as valid.
     """
+    if sys.platform == "win32":
+        return False
     return _user_dbus_socket_path().exists() or _user_systemd_private_socket_path().exists()
 
 
@@ -1149,6 +1155,8 @@ def _ensure_user_systemd_env() -> None:
     We detect the standard socket path and set the vars so all subsequent
     subprocess calls inherit them.
     """
+    if sys.platform == "win32":
+        return  # systemd not available on Windows
     uid = os.getuid()
     if "XDG_RUNTIME_DIR" not in os.environ:
         runtime_dir = f"/run/user/{uid}"
@@ -1215,7 +1223,7 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
             username,
             reason="User systemd control sockets are missing even though linger is enabled.",
             fix_hint=(
-                f"  systemctl start user@{os.getuid()}.service\n"
+                f"  systemctl start user@{os.getuid() if sys.platform != 'win32' else 0}.service\n"
                 "  (may require sudo; try again after the command succeeds)"
             ),
         )
@@ -1540,6 +1548,8 @@ def _require_root_for_system_service(action: str) -> None:
 
 
 def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, str]:
+    if sys.platform == "win32":
+        raise NotImplementedError("System service identity is not available on Windows")
     import getpass
     import grp
     import pwd
@@ -1645,6 +1655,9 @@ def get_systemd_linger_status() -> tuple[bool | None, str]:
         try:
             import pwd
             username = pwd.getpwuid(os.getuid()).pw_name
+        except (ImportError, AttributeError):
+            import getpass as _getpass
+            username = _getpass.getuser()
         except Exception:
             return None, "could not determine current user"
 
@@ -1692,6 +1705,8 @@ def _launchd_user_home() -> Path:
     Profile-mode Hermes often sets ``HOME`` to a profile-scoped directory, but
     launchd user agents still live under the actual account home.
     """
+    if sys.platform == "win32":
+        return Path.home()
     import pwd
 
     return Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -2444,6 +2459,8 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
+    if sys.platform == "win32":
+        return "user"
     return f"gui/{os.getuid()}"
 
 

@@ -14,6 +14,7 @@ import queue
 import re
 import shlex
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -66,14 +67,15 @@ def _resolve_home_dir() -> str:
     if expanded and expanded != "~":
         return expanded
 
-    try:
-        import pwd
+    if sys.platform != "win32":
+        try:
+            import pwd
 
-        resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()
-        if resolved:
-            return resolved
-    except Exception:
-        pass
+            resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()
+            if resolved:
+                return resolved
+        except Exception:
+            pass
 
     # Last resort: /tmp (writable on any POSIX system). Avoids crashing the
     # subprocess with no HOME; callers can set HERMES_HOME explicitly if they

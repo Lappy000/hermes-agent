@@ -2899,7 +2899,11 @@ def _terminate_reclaimed_worker(
 
     info["termination_attempted"] = True
     try:
-        kill(int(pid), signal.SIGTERM)
+        if sys.platform == "win32":
+            from hermes_cli.platform_process import terminate_process
+            terminate_process(int(pid))
+        else:
+            kill(int(pid), signal.SIGTERM)
     except (ProcessLookupError, OSError):
         return info
 
@@ -2911,7 +2915,11 @@ def _terminate_reclaimed_worker(
 
     if _pid_alive(pid):
         try:
-            kill(int(pid), signal.SIGKILL)
+            if sys.platform == "win32":
+                from hermes_cli.platform_process import force_kill_process
+                force_kill_process(int(pid))
+            else:
+                kill(int(pid), signal.SIGKILL)
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info
@@ -3025,7 +3033,11 @@ def enforce_max_runtime(
         )
         if kill is not None:
             try:
-                kill(pid, signal.SIGTERM)
+                if sys.platform == "win32":
+                    from hermes_cli.platform_process import terminate_process
+                    terminate_process(pid)
+                else:
+                    kill(pid, signal.SIGTERM)
             except (ProcessLookupError, OSError):
                 pass
             # Short polling wait — no time.sleep on the write txn.
@@ -3035,7 +3047,11 @@ def enforce_max_runtime(
                 time.sleep(0.5)
             if _pid_alive(pid):
                 try:
-                    kill(pid, signal.SIGKILL)
+                    if sys.platform == "win32":
+                        from hermes_cli.platform_process import force_kill_process
+                        force_kill_process(pid)
+                    else:
+                        kill(pid, signal.SIGKILL)
                     killed = True
                 except (ProcessLookupError, OSError):
                     pass

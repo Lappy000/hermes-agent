@@ -97,10 +97,18 @@ def remove_path_from_shell_configs():
 
 def remove_wrapper_script():
     """Remove the hermes wrapper script if it exists."""
+    import sys as _sys
     wrapper_paths = [
         Path.home() / ".local" / "bin" / "hermes",
-        Path("/usr/local/bin/hermes"),
     ]
+    if _sys.platform == "win32":
+        # Windows wrapper locations
+        wrapper_paths = [
+            Path.home() / ".hermes" / "bin" / "hermes.cmd",
+            Path.home() / ".hermes" / "bin" / "hermes.ps1",
+        ]
+    else:
+        wrapper_paths.append(Path("/usr/local/bin/hermes"))
     
     removed = []
     for wrapper in wrapper_paths:
