@@ -140,9 +140,12 @@ def _log_signal(signum: int, frame) -> None:
 # sys.exit(0) + _log_exit), which keeps the gateway alive as long as
 # the main command pipe is still readable.  Terminal signals still
 # route through _log_signal so kills and hangups are diagnosable.
-signal.signal(signal.SIGPIPE, signal.SIG_IGN)
-signal.signal(signal.SIGTERM, _log_signal)
-signal.signal(signal.SIGHUP, _log_signal)
+if hasattr(signal, "SIGPIPE"):
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+if hasattr(signal, "SIGTERM"):
+    signal.signal(signal.SIGTERM, _log_signal)
+if hasattr(signal, "SIGHUP"):
+    signal.signal(signal.SIGHUP, _log_signal)
 signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
