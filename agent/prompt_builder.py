@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -538,16 +539,29 @@ WSL_ENVIRONMENT_HINT = (
     "the Windows username if needed."
 )
 
+WINDOWS_ENVIRONMENT_HINT = (
+    "You are running natively on Windows. "
+    "Use PowerShell commands (Get-ChildItem, Get-Content, etc.) or their aliases (ls, cat, dir). "
+    "File paths use backslashes (C:\\Users\\...) or forward slashes. "
+    "Drive letters like X:\\, D:\\ are valid paths. "
+    "Do NOT use Linux commands like /mnt/c/ paths, chmod, grep, etc. "
+    "Use Windows equivalents: Select-String instead of grep, "
+    "Get-ChildItem instead of find, Remove-Item instead of rm. "
+    "The terminal tool runs PowerShell by default."
+)
+
 
 def build_environment_hints() -> str:
     """Return environment-specific guidance for the system prompt.
 
-    Detects WSL, and can be extended for Termux, Docker, etc.
+    Detects WSL, native Windows, and can be extended for Termux, Docker, etc.
     Returns an empty string when no special environment is detected.
     """
     hints: list[str] = []
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
+    elif sys.platform == "win32":
+        hints.append(WINDOWS_ENVIRONMENT_HINT)
     return "\n\n".join(hints)
 
 

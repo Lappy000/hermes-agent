@@ -582,6 +582,83 @@ class LocalEnvironment(BaseEnvironment):
 
         return proc
 
+    # ------------------------------------------------------------------
+    # Windows-specific overrides
+    # ------------------------------------------------------------------
+
+    def init_session(self):
+        """Override init_session for Windows.
+
+        On Windows with PowerShell/cmd, bash snapshots don't apply.
+        We just mark snapshot as ready (skip bash env capture) and
+        persist cwd to the file for tracking.
+        """
+        if not _IS_WINDOWS:
+            return super().init_session()
+
+        shell = _get_configured_shell()
+        if _is_bash(shell):
+            # Git Bash on Windows — use the standard bash init
+            return super().init_session()
+
+        # PowerShell or cmd — no bash snapshot needed
+        self._snapshot_ready = True
+        # Write initial CWD
+        try:
+            with open(self._cwd_file, "w") as f:
+                f.write(self.cwd)
+        except OSError:
+            pass
+        logger.info(
+            "Session initialized for Windows (session=%s, shell=%s, cwd=%s)",
+            self._session_id,
+            os.path.basename(shell),
+            self.cwd,
+        )
+
+    def _wrap_command(self, command: str, cwd: str) -> str:
+        """Override _wrap_command for Windows PowerShell/cmd.
+
+        On Windows with PowerShell, we build a PS script that:
+        1. cd's to the working directory
+        2. Runs the command
+        3. Writes the final CWD to the tracking file
+        4. Exits with the command's exit code
+        """
+        if not _IS_WINDOWS:
+            return super()._wrap_command(command, cwd)
+
+        shell = _get_configured_shell()
+        if _is_bash(shell):
+            return super()._wrap_command(command, cwd)
+
+        if _is_powershell(shell):
+            # PowerShell wrapper
+            # Escape single quotes in cwd for PS
+            ps_cwd = cwd.replace("'", "''")
+            cwd_file_escaped = self._cwd_file.replace("'", "''")
+            # Build multi-statement PS script
+            parts = []
+            parts.append(f"Set-Location -LiteralPath '{ps_cwd}' -ErrorAction Stop")
+            # Run the user command directly
+            parts.append(command)
+            parts.append("$__hermes_ec = $LASTEXITCODE; if ($null -eq $__hermes_ec) { $__hermes_ec = 0 }")
+            # Write CWD for tracking
+            parts.append(f"(Get-Location).Path | Out-File -FilePath '{cwd_file_escaped}' -Encoding UTF8 -NoNewline")
+            parts.append("exit $__hermes_ec")
+            return "; ".join(parts)
+        elif _is_cmd(shell):
+            # cmd.exe wrapper
+            cmd_cwd = cwd.replace("/", "\\")
+            cwd_file_cmd = self._cwd_file.replace("/", "\\")
+            parts = []
+            parts.append(f'cd /d "{cmd_cwd}"')
+            parts.append(command)
+            parts.append(f'cd > "{cwd_file_cmd}"')
+            return " && ".join(parts)
+        else:
+            return super()._wrap_command(command, cwd)
+
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
 
