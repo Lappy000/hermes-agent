@@ -252,7 +252,7 @@ class TestDeveloperRoleSwap:
         assert messages[0]["role"] == "system"
 
     def test_developer_role_via_nous_portal(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1", model="hermes-3-llama-3.1-70b")
+        agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1", model="gpt-5")
         agent.context_compressor.context_length = 200000
         messages = [
             {"role": "system", "content": "You are helpful."},
